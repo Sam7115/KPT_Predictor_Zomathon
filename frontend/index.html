@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ZOMATHON KPT Prediction System</title>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { background:#09090f; color:#e2e8f0; font-family:'Courier New',monospace; }
+    ::-webkit-scrollbar { width:4px; } ::-webkit-scrollbar-track { background:#0a0a14; } ::-webkit-scrollbar-thumb { background:#3d1b69; border-radius:2px; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+    @keyframes slideIn { from{opacity:0;transform:translateY(-8px)} to{opacity:1;transform:translateY(0)} }
+    .pulse { animation:pulse 1.5s infinite; }
+    .slide-in { animation:slideIn 0.3s ease; }
+    button:hover { opacity:0.9; transform:scale(1.02); }
+    button { transition:all 0.2s; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+// ── CONFIG ─────────────────────────────────────────────────────────────────
+const API = "http://localhost:8000";
+
+// ── HELPERS ────────────────────────────────────────────────────────────────
+const api = async (path, opts={}) => {
+  try {
+    const r = await fetch(API + path, { headers:{"Content-Type":"application/json"}, ...opts });
+    return await r.json();
+  } catch(e) {
+    console.error("API error:", path, e);
+    return null;
+  }
+};
+
+const DC = {
+  ACCEPTED: { bg:"#0f3d2e", border:"#16a34a", text:"#4ade80" },
+  REPLACED: { bg:"#3d0f0f", border:"#dc2626", text:"#f87171" },
+};
+
+// ── SMALL COMPONENTS ───────────────────────────────────────────────────────
+const Pill = ({label, value, color="#a78bfa"}) => (
+  <div style={{background:"#0a0a14",borderRadius:7,padding:"8px 10px",textAlign:"center"}}>
+    <div style={{fontSize:8,color:"#4b5563",marginBottom:3,letterSpacing:"1px"}}>{label.toUpperCase()}</div>
+    <div style={{fontSize:14,fontWeight:800,color}}>{value}</div>
+  </div>
+);
+
+const StatCard = ({label, value, sub, color="#a78bfa"}) => (
+  <div style={{background:"#13131f",border:`1px solid #1e1e3f`,borderRadius:10,padding:"14px",textAlign:"center",borderTop:`3px solid ${color}`}}>
+    <div style={{fontSize:22,fontWeight:900,color,marginBottom:4}}>{value}</div>
+    <div style={{fontSize:10,color:"#94a3b8"}}>{label}</div>
+    {sub && <div style={{fontSize:8,color:"#475569",marginTop:3,fontStyle:"italic"}}>{sub}</div>}
+  </div>
+);
+
+const DecisionBadge = ({decision, reason, confidence}) => (
+  <div style={{padding:"9px 13px",borderRadius:8,background:DC[decision]?.bg||"#13131f",border:`1px solid ${DC[decision]?.border||"#1e1e3f"}`,marginTop:8}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+      <span style={{fontSize:10,color:DC[decision]?.text||"#94a3b8",fontWeight:700,lineHeight:1.4}}>{reason}</span>
+      <span style={{fontSize:9,color:"#6b7280",whiteSpace:"nowrap",marginTop:1}}>Conf: {Math.round((confidence||0)*100)}%</span>
+    </div>
+  </div>
+);
+
+// Simple bar chart using divs
+const MiniBarChart = ({orders}) => {
+  if (!orders || orders.length === 0) return null;
+  const recent = [...orders].slice(0, 10).reverse();
+  const maxErr = Math.max(...recent.map(o => Math.max(o.raw_error, o.clean_error, 0.1)));
+  return (
+    <div>
+      <div style={{display:"flex",alignItems:"flex-end",gap:4,height:64,marginBottom:6}}>
+        {recent.map((o,i) => (
+          <div key={i} style={{flex:1,display:"flex",gap:2,alignItems:"flex-end",height:"100%"}}>
+            <div style={{flex:1,background:"#ef4444",borderRadius:"2px 2px 0 0",height:`${(o.raw_error/maxErr)*100}%`,minHeight:2,opacity:0.85}}/>
+            <div style={{flex:1,background:"#4ade80",borderRadius:"2px 2px 0 0",height:`${(o.clean_error/maxErr)*100}%`,minHeight:2,opacity:0.85}}/>
+          </div>
+        ))}
+      </div>
+      <div style={{display:"flex",gap:12,justifyContent:"center"}}>
+        {[["#ef4444","Raw Error"],["#4ade80","Clean Error"]].map(([c,l])=>(
+          <div key={l} style={{display:"flex",gap:5,alignItems:"center"}}>
+            <div style={{width:8,height:8,background:c,borderRadius:2}}/>
+            <span style={{fontSize:8,color:"#6b7280"}}>{l}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
+// MAE Timeline chart
+const TimelineChart = ({timeline}) => {
+  if (!timeline || timeline.length < 2) return <div style={{color:"#374151",fontSize:11,textAlign:"center",padding:"20px 0"}}>Need more orders for timeline</div>;
+  const maxMAE = Math.max(...timeline.map(t => Math.max(t.raw_mae, t.clean_mae, 0.01)));
+  const H = 80, W = 100;
+  const pts = (key) => timeline.map((t,i) => {
+    const x = (i / (timeline.length-1)) * W;
+    const y = H - (t[key] / maxMAE) * H;
+    return `${x},${y}`;
+  }).join(" ");
+  return (
+    <svg width="100%" height={H+20} viewBox={`0 0 ${W} ${H+20}`} preserveAspectRatio="none">
+      <polyline points={pts("raw_mae")} fill="none" stroke="#ef4444" strokeWidth="1.5" opacity="0.8"/>
+      <polyline points={pts("clean_mae")} fill="none" stroke="#4ade80" strokeWidth="1.5" opacity="0.8"/>
+    </svg>
+  );
+};
+
+// ── ORDER CARD ─────────────────────────────────────────────────────────────
+const OrderCard = ({order, isActive, onClick}) => (
+  <div onClick={onClick} className="slide-in" style={{
+    padding:"9px 11px", borderRadius:8, marginBottom:5,
+    background: isActive?"#1a1a2e":"#0a0a14",
+    border:`1px solid ${isActive?"#6366f1":"#1e1e3f"}`,
+    cursor:"pointer", transition:"all 0.2s"
+  }}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+      <div>
+        <div style={{fontSize:11,fontWeight:600,color:"#e2e8f0"}}>#{order.id} {order.restaurant?.name}</div>
+        <div style={{fontSize:8,color:"#4b5563",marginTop:1}}>{order.timestamp_readable} · {order.rider_name}</div>
+      </div>
+      <div style={{display:"flex",gap:6,alignItems:"center"}}>
+        <span style={{fontSize:9,color:DC[order.decision]?.text,background:DC[order.decision]?.bg,padding:"2px 6px",borderRadius:3,fontWeight:600}}>
+          {order.decision}
+        </span>
+        <span style={{fontSize:11,fontWeight:700,color:"#fbbf24"}}>{order.final_kpt}m</span>
+      </div>
+    </div>
+  </div>
+);
+
+// ── MAIN APP ───────────────────────────────────────────────────────────────
+function App() {
+  const [orders,   setOrders]   = useState([]);
+  const [active,   setActive]   = useState(null);
+  const [stats,    setStats]    = useState(null);
+  const [timeline, setTimeline] = useState([]);
+  const [loading,  setLoading]  = useState(false);
+  const [bulkN,    setBulkN]    = useState(10);
+  const [tab,      setTab]      = useState("dashboard"); // dashboard | orders | algo
+  const [serverOk, setServerOk] = useState(null);
+  const [toast,    setToast]    = useState(null);
+  const pollRef = useRef(null);
+
+  const showToast = (msg, color="#4ade80") => {
+    setToast({msg,color});
+    setTimeout(()=>setToast(null), 2500);
+  };
+
+  const refresh = useCallback(async () => {
+    const [ord, st, tl] = await Promise.all([
+      api("/api/orders?limit=30"),
+      api("/api/stats"),
+      api("/api/stats/timeline"),
+    ]);
+    if (ord)  setOrders(ord.orders || []);
+    if (st)   setStats(st);
+    if (tl)   setTimeline(tl.timeline || []);
+  }, []);
+
+  // Check server on mount
+  useEffect(() => {
+    api("/").then(r => {
+      setServerOk(!!r);
+      if (r) refresh();
+    });
+  }, []);
+
+  const placeOrder = async () => {
+    setLoading(true);
+    const res = await api("/api/orders/place", {method:"POST"});
+    if (res?.order) {
+      setActive(res.order);
+      showToast(`Order #${res.order.id} placed — ${res.order.decision}`);
+      await refresh();
+    }
+    setLoading(false);
+  };
+
+  const placeBulk = async () => {
+    setLoading(true);
+    const res = await api(`/api/orders/bulk/${bulkN}`, {method:"POST"});
+    if (res) {
+      showToast(`${res.orders_placed} orders placed`, "#a78bfa");
+      await refresh();
+    }
+    setLoading(false);
+  };
+
+  const runScenario = async (scenario) => {
+    setLoading(true);
+    const res = await api(`/api/simulate/scenario/${scenario}`);
+    if (res?.success) {
+      showToast(`Scenario "${scenario}": ${res.orders_placed} orders`, "#f59e0b");
+      await refresh();
+    }
+    setLoading(false);
+  };
+
+  const reset = async () => {
+    await api("/api/orders/reset", {method:"DELETE"});
+    setOrders([]); setStats(null); setTimeline([]); setActive(null);
+    showToast("All orders cleared", "#f87171");
+  };
+
+  const maeImprove = stats && stats.raw_mae > 0
+    ? ((stats.raw_mae - stats.clean_mae) / stats.raw_mae * 100).toFixed(1)
+    : 0;
+
+  // ── RENDER ──────────────────────────────────────────────────────────────
+  return (
+    <div style={{minHeight:"100vh",background:"#09090f"}}>
+
+      {/* Toast */}
+      {toast && (
+        <div style={{position:"fixed",top:16,right:16,background:"#13131f",border:`1px solid ${toast.color}`,borderRadius:8,padding:"10px 16px",fontSize:11,color:toast.color,zIndex:999,boxShadow:"0 4px 20px rgba(0,0,0,0.5)"}}>
+          {toast.msg}
+        </div>
+      )}
+
+      {/* Header */}
+      <div style={{background:"linear-gradient(135deg,#1a0a2e,#0d1117)",borderBottom:"1px solid #2d1b69",padding:"14px 24px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <div style={{width:36,height:36,borderRadius:"50%",background:"linear-gradient(135deg,#e23744,#c41e2e)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:900,color:"#fff"}}>Z</div>
+          <div>
+            <div style={{fontSize:15,fontWeight:700,color:"#fff"}}>ZOMATHON KPT System</div>
+            <div style={{fontSize:9,color:"#7c3aed",letterSpacing:"2px"}}>
+              BACKEND: {serverOk===null?"CHECKING..."
+                :serverOk?<span style={{color:"#4ade80"}}>● CONNECTED · localhost:8000</span>
+                :<span style={{color:"#f87171"}}>● OFFLINE — start backend first</span>}
+            </div>
+          </div>
+        </div>
+
+        {/* Nav Tabs */}
+        <div style={{display:"flex",gap:6}}>
+          {["dashboard","orders","algo"].map(t=>(
+            <button key={t} onClick={()=>setTab(t)} style={{
+              background: tab===t?"#3d1f7a":"#0a0a14",
+              border:`1px solid ${tab===t?"#7c3aed":"#1e1e3f"}`,
+              borderRadius:7, padding:"6px 14px", fontSize:10, color: tab===t?"#e2e8f0":"#6b7280",
+              cursor:"pointer", textTransform:"uppercase", letterSpacing:"1px"
+            }}>{t}</button>
+          ))}
+        </div>
+
+        {/* Stats pills in header */}
+        {stats && (
+          <div style={{display:"flex",gap:16}}>
+            {[{l:"Orders",v:stats.total},{l:"Corrupted",v:stats.corrupted,w:true},{l:"Replaced",v:stats.replaced}].map(s=>(
+              <div key={s.l} style={{textAlign:"center"}}>
+                <div style={{fontSize:18,fontWeight:800,color:s.w?"#f87171":"#a78bfa"}}>{s.v}</div>
+                <div style={{fontSize:8,color:"#64748b",letterSpacing:"1px"}}>{s.l.toUpperCase()}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div style={{padding:"18px 24px",maxWidth:1400,margin:"0 auto"}}>
+
+        {/* ── DASHBOARD TAB ─────────────────────────────────────────────── */}
+        {tab==="dashboard" && (
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:18}}>
+
+            {/* Col 1: Controls */}
+            <div style={{display:"flex",flexDirection:"column",gap:14}}>
+
+              {/* Place Order */}
+              <div style={{background:"linear-gradient(135deg,#1e0a3c,#130a2e)",border:"1px solid #3d1f7a",borderRadius:13,padding:"18px",textAlign:"center"}}>
+                <div style={{fontSize:9,color:"#8b5cf6",letterSpacing:"2px",marginBottom:10}}>SIMULATE ORDER</div>
+                <button onClick={placeOrder} disabled={loading||!serverOk} style={{
+                  background:loading||!serverOk?"#2d1b69":"linear-gradient(135deg,#e23744,#c41e2e)",
+                  border:"none",borderRadius:9,padding:"12px 36px",fontSize:14,fontWeight:700,
+                  color:loading||!serverOk?"#6b7280":"#fff",cursor:loading||!serverOk?"not-allowed":"pointer",
+                  boxShadow:loading?"none":"0 4px 16px rgba(226,55,68,0.4)",display:"block",width:"100%",marginBottom:8
+                }}>
+                  {loading?"⏳ Processing...":"🛒 Place 1 Order"}
+                </button>
+
+                {/* Bulk */}
+                <div style={{display:"flex",gap:8,marginBottom:10}}>
+                  <input type="number" min="1" max="50" value={bulkN} onChange={e=>setBulkN(+e.target.value)}
+                    style={{flex:1,background:"#0a0a14",border:"1px solid #1e1e3f",borderRadius:7,padding:"8px",color:"#e2e8f0",fontSize:12,textAlign:"center"}}/>
+                  <button onClick={placeBulk} disabled={loading||!serverOk} style={{
+                    flex:2,background:loading?"#1e1e3f":"#16a34a",border:"none",borderRadius:7,padding:"8px",
+                    fontSize:11,fontWeight:600,color:"#fff",cursor:loading?"not-allowed":"pointer"
+                  }}>📦 Bulk Orders</button>
+                </div>
+
+                {/* Scenarios */}
+                <div style={{fontSize:9,color:"#475569",marginBottom:6,letterSpacing:"1px"}}>QUICK SCENARIOS</div>
+                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:6}}>
+                  {[
+                    {id:"busy_night",  label:"🌙 Busy Night",   color:"#e23744"},
+                    {id:"quiet_morning",label:"☀️ Quiet AM",    color:"#4ade80"},
+                    {id:"rush_hour",   label:"⚡ Rush Hour",    color:"#f59e0b"},
+                  ].map(sc=>(
+                    <button key={sc.id} onClick={()=>runScenario(sc.id)} disabled={loading||!serverOk} style={{
+                      background:"#0a0a14",border:`1px solid ${sc.color}44`,borderRadius:7,
+                      padding:"7px 4px",fontSize:9,color:sc.color,cursor:"pointer",fontWeight:600
+                    }}>{sc.label}</button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Active order detail */}
+              {active && (
+                <div className="slide-in" style={{background:"#0f0f1a",border:"1px solid #1e1e3f",borderRadius:13,padding:16}}>
+                  <div style={{fontSize:9,color:"#6366f1",letterSpacing:"2px",marginBottom:10}}>LATEST ORDER #{active.id}</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7,marginBottom:10}}>
+                    <Pill label="Restaurant"  value={active.restaurant?.name} color="#e2e8f0"/>
+                    <Pill label="Rider"        value={active.rider_name} color="#94a3b8"/>
+                    <Pill label="Rider Dist"   value={`${active.rider_distance_m}m`} color={active.rider_near?"#f87171":"#4ade80"}/>
+                    <Pill label="Gap"          value={`${active.gap_minutes} min`}    color={active.gap_minutes>=5?"#f87171":"#4ade80"}/>
+                    <Pill label="Google Busy"  value={`${active.google_busyness}%`}   color="#a78bfa"/>
+                    <Pill label="POS Orders"   value={active.pos_orders}              color="#a78bfa"/>
+                  </div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:6,marginBottom:8}}>
+                    {[
+                      {l:"True KPT",  v:`${active.true_kpt}m`,  c:"#4ade80",n:"Ground truth"},
+                      {l:"Raw FOR",   v:`${active.for_time}m`,   c:active.tapped_early?"#f87171":"#4ade80",n:active.tapped_early?"⚠️ Early":"✅ Honest"},
+                      {l:"Cleaned",   v:`${active.clean_kpt}m`,  c:"#a78bfa",n:active.decision},
+                      {l:"Final×Rush",v:`${active.final_kpt}m`,  c:"#fbbf24",n:`×${active.rush_multiplier}`},
+                    ].map(k=>(
+                      <div key={k.l} style={{background:"#0a0a14",borderRadius:7,padding:"9px 6px",textAlign:"center"}}>
+                        <div style={{fontSize:8,color:"#4b5563",marginBottom:2}}>{k.l.toUpperCase()}</div>
+                        <div style={{fontSize:16,fontWeight:800,color:k.c}}>{k.v}</div>
+                        <div style={{fontSize:8,color:"#6b7280",marginTop:2}}>{k.n}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <DecisionBadge decision={active.decision} reason={active.reason} confidence={active.confidence}/>
+                  <div style={{marginTop:8,fontSize:9,color:"#475569",textAlign:"center"}}>
+                    Rush: ×{active.rush_multiplier} (Google {active.google_busyness}% busy · {active.pos_orders} POS orders)
+                  </div>
+                </div>
+              )}
+
+              {/* Reset */}
+              {stats?.total > 0 && (
+                <button onClick={reset} style={{background:"#1a0a0f",border:"1px solid #7b1c26",borderRadius:9,padding:"8px",fontSize:10,color:"#f87171",cursor:"pointer",fontWeight:600}}>
+                  🗑 Reset All Orders
+                </button>
+              )}
+            </div>
+
+            {/* Col 2: Stats */}
+            <div style={{display:"flex",flexDirection:"column",gap:14}}>
+              <div style={{background:"#0f0f1a",border:"1px solid #1e1e3f",borderRadius:13,padding:16}}>
+                <div style={{fontSize:9,color:"#6366f1",letterSpacing:"2px",marginBottom:12}}>LIVE STATS</div>
+                {!stats || stats.total===0 ? (
+                  <div style={{color:"#374151",fontSize:11,textAlign:"center",padding:"20px 0"}}>Place orders to see stats</div>
+                ) : (
+                  <>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:10}}>
+                      <div style={{background:"#1a0a0f",border:"1px solid #dc2626",borderRadius:9,padding:"12px",textAlign:"center"}}>
+                        <div style={{fontSize:9,color:"#ef4444",marginBottom:3}}>RAW MAE</div>
+                        <div style={{fontSize:24,fontWeight:900,color:"#f87171"}}>{stats.raw_mae}<span style={{fontSize:10}}>m</span></div>
+                        <div style={{fontSize:8,color:"#6b7280"}}>Corrupted labels</div>
+                      </div>
+                      <div style={{background:"#0a1a10",border:"1px solid #16a34a",borderRadius:9,padding:"12px",textAlign:"center"}}>
+                        <div style={{fontSize:9,color:"#4ade80",marginBottom:3}}>CLEAN MAE</div>
+                        <div style={{fontSize:24,fontWeight:900,color:"#4ade80"}}>{stats.clean_mae}<span style={{fontSize:10}}>m</span></div>
+                        <div style={{fontSize:8,color:"#6b7280"}}>After your rule</div>
+                      </div>
+                    </div>
+                    <div style={{background:"linear-gradient(135deg,#1e0a3c,#0a1a10)",border:"1px solid #7c3aed",borderRadius:9,padding:"12px",textAlign:"center",marginBottom:10}}>
+                      <div style={{fontSize:11,color:"#a78bfa"}}>MAE Improvement</div>
+                      <div style={{fontSize:32,fontWeight:900,color:"#c4b5fd"}}>−{maeImprove}%</div>
+                      <div style={{fontSize:8,color:"#6b7280"}}>{stats.replaced} replaced / {stats.corrupted} corrupted</div>
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                      <StatCard label="Corruption Rate"   value={`${stats.corruption_rate_pct}%`} color="#f87171"/>
+                      <StatCard label="Replace Rate"      value={`${stats.replace_rate_pct}%`}    color="#f59e0b"/>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* MAE Timeline */}
+              <div style={{background:"#0f0f1a",border:"1px solid #1e1e3f",borderRadius:13,padding:16}}>
+                <div style={{fontSize:9,color:"#6366f1",letterSpacing:"2px",marginBottom:10}}>MAE TIMELINE</div>
+                <TimelineChart timeline={timeline}/>
+                <div style={{display:"flex",gap:12,justifyContent:"center",marginTop:4}}>
+                  {[["#ef4444","Raw MAE"],["#4ade80","Clean MAE"]].map(([c,l])=>(
+                    <div key={l} style={{display:"flex",gap:5,alignItems:"center"}}>
+                      <div style={{width:16,height:2,background:c,borderRadius:1}}/>
+                      <span style={{fontSize:8,color:"#6b7280"}}>{l}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Error bar chart */}
+              <div style={{background:"#0f0f1a",border:"1px solid #1e1e3f",borderRadius:13,padding:16}}>
+                <div style={{fontSize:9,color:"#6366f1",letterSpacing:"2px",marginBottom:10}}>ERROR PER ORDER (LAST 10)</div>
+                <MiniBarChart orders={orders}/>
+              </div>
+            </div>
+
+            {/* Col 3: Order Log */}
+            <div style={{background:"#0f0f1a",border:"1px solid #1e1e3f",borderRadius:13,padding:16,display:"flex",flexDirection:"column"}}>
+              <div style={{fontSize:9,color:"#6366f1",letterSpacing:"2px",marginBottom:12}}>ORDER LOG</div>
+              {orders.length===0 ? (
+                <div style={{color:"#374151",fontSize:11,textAlign:"center",padding:"30px 0"}}>No orders yet — place one!</div>
+              ) : (
+                <div style={{overflowY:"auto",flex:1,maxHeight:"70vh",paddingRight:4}}>
+                  {orders.map(o=>(
+                    <OrderCard key={o.id} order={o} isActive={active?.id===o.id} onClick={()=>setActive(o)}/>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── ORDERS TAB ────────────────────────────────────────────────── */}
+        {tab==="orders" && (
+          <div>
+            <div style={{marginBottom:14,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div style={{fontSize:11,color:"#6366f1",letterSpacing:"2px"}}>ALL ORDERS — {orders.length} TOTAL</div>
+              <button onClick={refresh} style={{background:"#13131f",border:"1px solid #1e1e3f",borderRadius:7,padding:"6px 14px",fontSize:10,color:"#94a3b8",cursor:"pointer"}}>↻ Refresh</button>
+            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+              {/* Table */}
+              <div style={{background:"#0f0f1a",border:"1px solid #1e1e3f",borderRadius:13,padding:16,overflowY:"auto",maxHeight:"75vh"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:10}}>
+                  <thead>
+                    <tr style={{borderBottom:"1px solid #1e1e3f"}}>
+                      {["#","Restaurant","Dist","Gap","Decision","Raw","Clean","Final"].map(h=>(
+                        <th key={h} style={{padding:"6px 8px",color:"#475569",textAlign:"left",fontWeight:600,letterSpacing:"1px",fontSize:8}}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {orders.map(o=>(
+                      <tr key={o.id} onClick={()=>setActive(o)} style={{borderBottom:"1px solid #0a0a14",cursor:"pointer",background:active?.id===o.id?"#1a1a2e":"transparent"}}>
+                        <td style={{padding:"6px 8px",color:"#64748b"}}>{o.id}</td>
+                        <td style={{padding:"6px 8px",color:"#e2e8f0"}}>{o.restaurant?.name}</td>
+                        <td style={{padding:"6px 8px",color:o.rider_near?"#f87171":"#4ade80"}}>{o.rider_distance_m}m</td>
+                        <td style={{padding:"6px 8px",color:o.gap_minutes>=5?"#f87171":"#4ade80"}}>{o.gap_minutes}m</td>
+                        <td style={{padding:"6px 8px",color:DC[o.decision]?.text,fontWeight:700}}>{o.decision}</td>
+                        <td style={{padding:"6px 8px",color:"#f87171"}}>{o.for_time}</td>
+                        <td style={{padding:"6px 8px",color:"#a78bfa"}}>{o.clean_kpt}</td>
+                        <td style={{padding:"6px 8px",color:"#fbbf24",fontWeight:700}}>{o.final_kpt}m</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {/* Detail panel */}
+              <div style={{background:"#0f0f1a",border:"1px solid #1e1e3f",borderRadius:13,padding:16}}>
+                {!active ? (
+                  <div style={{color:"#374151",fontSize:11,textAlign:"center",padding:"40px 0"}}>← Click a row to inspect</div>
+                ) : (
+                  <div className="slide-in">
+                    <div style={{fontSize:9,color:"#6366f1",letterSpacing:"2px",marginBottom:12}}>ORDER #{active.id} DETAIL</div>
+                    <div style={{marginBottom:10}}>
+                      <div style={{fontSize:12,fontWeight:700,color:"#e2e8f0"}}>{active.restaurant?.name}</div>
+                      <div style={{fontSize:10,color:"#64748b"}}>{active.items?.join(" · ")}</div>
+                      <div style={{fontSize:9,color:"#475569",marginTop:2}}>Rider: {active.rider_name} · {active.timestamp_readable}</div>
+                    </div>
+                    <div style={{background:"#0a0a14",borderRadius:8,padding:"12px",fontFamily:"Courier New,monospace",fontSize:10,lineHeight:1.8,marginBottom:10}}>
+                      <div style={{color:"#475569"}}># INPUT SIGNALS</div>
+                      <div style={{color:"#e2e8f0"}}>rider_distance  = <span style={{color:active.rider_near?"#f87171":"#4ade80"}}>{active.rider_distance_m}m ({active.rider_near?"within 15m ⚠️":"outside 15m ✅"})</span></div>
+                      <div style={{color:"#e2e8f0"}}>for_time        = <span style={{color:active.tapped_early?"#f87171":"#4ade80"}}>{active.for_time} min {active.tapped_early?"(tapped early!)":""}</span></div>
+                      <div style={{color:"#e2e8f0"}}>received_time   = <span style={{color:"#94a3b8"}}>{active.received_time} min</span></div>
+                      <div style={{color:"#e2e8f0"}}>gap             = <span style={{color:active.gap_minutes>=5?"#f87171":"#4ade80"}}>{active.gap_minutes} min {active.gap_minutes>=5?"(≥5 → REPLACE)":"(< 5 → ok)"}</span></div>
+                      <div style={{color:"#e2e8f0"}}>google_busyness = <span style={{color:"#a78bfa"}}>{active.google_busyness}%</span></div>
+                      <div style={{color:"#e2e8f0"}}>pos_orders      = <span style={{color:"#a78bfa"}}>{active.pos_orders} active</span></div>
+                      <div style={{color:"#475569",marginTop:4}}># OUTPUT</div>
+                      <div style={{color:"#e2e8f0"}}>clean_kpt       = <span style={{color:"#a78bfa"}}>{active.clean_kpt} min</span></div>
+                      <div style={{color:"#e2e8f0"}}>rush_multiplier = <span style={{color:"#f59e0b"}}>{active.rush_multiplier}×</span></div>
+                      <div style={{color:"#fbbf24",fontWeight:700}}>final_kpt       = {active.final_kpt} min</div>
+                    </div>
+                    <DecisionBadge decision={active.decision} reason={active.reason} confidence={active.confidence}/>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── ALGO TAB ──────────────────────────────────────────────────── */}
+        {tab==="algo" && (
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:18}}>
+            <div style={{background:"#0f0f1a",border:"1px solid #1e1e3f",borderRadius:13,padding:20}}>
+              <div style={{fontSize:9,color:"#4ade80",letterSpacing:"2px",marginBottom:14}}>MODULE 1 — LABEL CLEANING ALGORITHM</div>
+              <div style={{background:"#060610",borderRadius:8,padding:"16px",fontFamily:"Courier New,monospace",fontSize:11,lineHeight:1.9,marginBottom:14}}>
+                {[
+                  ["# Your exact algorithm — implemented in FastAPI","#475569"],
+                  ["def clean_label(rider_dist, for_time, received_time):","#e2e8f0"],
+                  ["  gap = received_time - for_time","#e2e8f0"],
+                  [" ",""],
+                  ["  if rider_dist >= 15:","#a78bfa"],
+                  ["    # Rider far away → no pressure → ACCEPT","#475569"],
+                  ["    return { kpt: for_time, decision: 'ACCEPTED' }","#a78bfa"],
+                  [" ",""],
+                  ["  if gap < 5:","#4ade80"],
+                  ["    # Within 15m but quick handoff → ACCEPT","#475569"],
+                  ["    return { kpt: for_time, decision: 'ACCEPTED' }","#4ade80"],
+                  [" ",""],
+                  ["  else:","#f87171"],
+                  ["    # Within 15m + long gap → CORRUPTED → REPLACE","#475569"],
+                  ["    return { kpt: received_time - 5, decision: 'REPLACED' }","#f87171"],
+                ].map(([t,c],i)=>(
+                  <div key={i} style={{color:c||"#e2e8f0"}}>{t}</div>
+                ))}
+              </div>
+              {/* Decision table */}
+              <div style={{fontSize:9,color:"#f59e0b",letterSpacing:"2px",marginBottom:8}}>DECISION TABLE</div>
+              <table style={{width:"100%",borderCollapse:"collapse",fontSize:10}}>
+                <thead>
+                  <tr style={{borderBottom:"1px solid #1e1e3f"}}>
+                    {["Condition","Decision","Reason"].map(h=><th key={h} style={{padding:"7px 9px",color:"#475569",textAlign:"left",fontSize:8}}>{h}</th>)}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[
+                    ["Rider > 15m (any gap)","✓ ACCEPT","No pressure — rider wasn't present","#a78bfa"],
+                    ["Rider ≤ 15m + gap < 5min","✓ ACCEPT","Fast handoff — likely genuine","#4ade80"],
+                    ["Rider ≤ 15m + gap ≥ 5min","✗ REPLACE","Pressure bias — use Received − 5min","#f87171"],
+                  ].map(([c,d,r,col])=>(
+                    <tr key={c} style={{borderBottom:"1px solid #0a0a14"}}>
+                      <td style={{padding:"7px 9px",color:"#94a3b8"}}>{c}</td>
+                      <td style={{padding:"7px 9px",color:col,fontWeight:700}}>{d}</td>
+                      <td style={{padding:"7px 9px",color:"#64748b"}}>{r}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={{display:"flex",flexDirection:"column",gap:14}}>
+              <div style={{background:"#0f0f1a",border:"1px solid #1e1e3f",borderRadius:13,padding:20}}>
+                <div style={{fontSize:9,color:"#a78bfa",letterSpacing:"2px",marginBottom:14}}>MODULE 2 — RUSH MULTIPLIER</div>
+                <div style={{background:"#060610",borderRadius:8,padding:"16px",fontFamily:"Courier New,monospace",fontSize:11,lineHeight:1.9,marginBottom:14}}>
+                  {[
+                    ["def compute_rush_multiplier(google_busyness, pos_orders):","#e2e8f0"],
+                    ["  kitchen_load = (","#e2e8f0"],
+                    ["    (google_busyness / 100) * 0.5 +","#a78bfa"],
+                    ["    (pos_orders / 18) * 0.5","#a78bfa"],
+                    ["  )","#e2e8f0"],
+                    ["  return 1 + kitchen_load * 0.35","#f59e0b"],
+                    [" ",""],
+                    ["final_kpt = clean_kpt * rush_multiplier","#fbbf24"],
+                    ["# Max +35% at full load  |  Min +0% at idle","#475569"],
+                  ].map(([t,c],i)=>(
+                    <div key={i} style={{color:c||"#e2e8f0"}}>{t}</div>
+                  ))}
+                </div>
+                <div style={{fontSize:9,color:"#475569",marginBottom:8,letterSpacing:"1px"}}>RUSH EXAMPLES</div>
+                {[
+                  {busyness:90,pos:16,label:"Friday Night"},
+                  {busyness:50,pos:8,label:"Afternoon"},
+                  {busyness:15,pos:3,label:"Early Morning"},
+                ].map(ex=>{
+                  const load = (ex.busyness/100)*0.5 + (ex.pos/18)*0.5;
+                  const rush = (1 + load*0.35).toFixed(3);
+                  const barW = Math.round(load*100);
+                  return (
+                    <div key={ex.label} style={{marginBottom:8}}>
+                      <div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}>
+                        <span style={{fontSize:10,color:"#94a3b8"}}>{ex.label} — {ex.busyness}% busy, {ex.pos} POS orders</span>
+                        <span style={{fontSize:10,color:"#f59e0b",fontWeight:700}}>×{rush}</span>
+                      </div>
+                      <div style={{background:"#0a0a14",borderRadius:3,height:6}}>
+                        <div style={{background:"#7c3aed",borderRadius:3,height:6,width:`${barW}%`,transition:"width 0.5s"}}/>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div style={{background:"#0f0f1a",border:"1px solid #1e1e3f",borderRadius:13,padding:16}}>
+                <div style={{fontSize:9,color:"#f59e0b",letterSpacing:"2px",marginBottom:12}}>API ENDPOINTS</div>
+                {[
+                  {method:"POST",path:"/api/orders/place",          desc:"Place 1 random order"},
+                  {method:"POST",path:"/api/orders/bulk/{n}",        desc:"Place n orders at once"},
+                  {method:"GET", path:"/api/orders",                 desc:"Get order history"},
+                  {method:"GET", path:"/api/stats",                  desc:"Aggregate statistics"},
+                  {method:"GET", path:"/api/stats/timeline",         desc:"MAE over time"},
+                  {method:"GET", path:"/api/simulate/scenario/{s}",  desc:"Run a scenario"},
+                  {method:"DELETE",path:"/api/orders/reset",         desc:"Clear all orders"},
+                ].map(e=>(
+                  <div key={e.path} style={{display:"flex",gap:8,alignItems:"flex-start",marginBottom:7}}>
+                    <span style={{fontSize:8,color:e.method==="GET"?"#4ade80":e.method==="POST"?"#a78bfa":"#f87171",background:"#0a0a14",padding:"2px 6px",borderRadius:3,fontWeight:700,minWidth:44,textAlign:"center"}}>{e.method}</span>
+                    <span style={{fontSize:9,color:"#fbbf24",fontFamily:"Courier New,monospace",flex:1}}>{e.path}</span>
+                    <span style={{fontSize:9,color:"#475569"}}>{e.desc}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.render(<App />, document.getElementById("root"));
+</script>
+</body>
+</html>
