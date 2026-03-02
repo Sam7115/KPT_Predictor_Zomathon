@@ -17,7 +17,7 @@ import uuid
 
 app = FastAPI(title="ZOMATHON KPT API", version="1.0.0")
 
-# Allow frontend to call backend
+# Allow frontend to call Backend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
