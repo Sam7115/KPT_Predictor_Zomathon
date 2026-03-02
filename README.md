@@ -242,4 +242,5 @@ Judges can visually observe MAE improvement in real time.
 
 1) Samarth Nalkar
 2) Anirudh Rawat
+3) Syed Shavez Jafar
 
