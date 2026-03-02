@@ -168,7 +168,7 @@ function App() {
 
   // Check server on mount
   useEffect(() => {
-    api("/").then(r => {
+    api("/api/health").then(r => {
       setServerOk(!!r);
       if (r) refresh();
     });
