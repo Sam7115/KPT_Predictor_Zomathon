@@ -237,3 +237,8 @@ Judges can visually observe MAE improvement in real time.
 
 **ZOMATHON KPT Prediction System --- Prototype v2.0**
 
+------------------------------------------------------------------------
+# Contributors
+
+1) Samarth Nalkar
+
