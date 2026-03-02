@@ -245,7 +245,7 @@ def compute_stats(orders: List[dict]) -> dict:
 
 # ─── API ENDPOINTS ────────────────────────────────────────────────────────────
 
-@app.get("/")
+@app.get("/api/health")
 def root():
     return {"message": "ZOMATHON KPT Prediction API", "version": "1.0.0", "status": "running"}
 
@@ -415,4 +415,5 @@ def simulate_scenario(scenario: str):
         "orders_placed": len(new_orders),
         "stats": compute_stats(orders_db)
     }
+
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
