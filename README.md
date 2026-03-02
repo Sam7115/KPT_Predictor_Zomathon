@@ -241,4 +241,5 @@ Judges can visually observe MAE improvement in real time.
 # Contributors
 
 1) Samarth Nalkar
+2) Anirudh Rawat
 
