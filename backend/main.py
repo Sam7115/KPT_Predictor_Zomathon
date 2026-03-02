@@ -5,6 +5,8 @@ Simulates real-time order processing with GPS label cleaning + rush detection
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Optional
 import random
@@ -413,3 +415,12 @@ def simulate_scenario(scenario: str):
         "orders_placed": len(new_orders),
         "stats": compute_stats(orders_db)
     }
+app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
+```
+
+### 3. Add `aiofiles` to `backend/requirements.txt`:
+```
+fastapi==0.115.0
+uvicorn==0.30.0
+pydantic==2.10.6
+aiofiles==23.2.1
